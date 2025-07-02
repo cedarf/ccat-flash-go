@@ -20,20 +20,27 @@ const CCATTimer: React.FC<CCATTimerProps> = ({
   const [showFlash, setShowFlash] = useState(false);
   const [timePerQuestion, setTimePerQuestion] = useState(defaultTimePerQuestion);
   const [showSettings, setShowSettings] = useState(false);
+  const [totalTimeRemaining, setTotalTimeRemaining] = useState(defaultTimePerQuestion * totalQuestions);
+  const [isOvertime, setIsOvertime] = useState(false);
   
   const intervalRef = useRef<NodeJS.Timeout | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
+  const startTimeRef = useRef<number>(Date.now());
 
   // Auto-start when component mounts
   useEffect(() => {
     setIsRunning(true);
+    startTimeRef.current = Date.now();
   }, []);
 
-  // Keyboard event listener for 'q' key
+  // Keyboard event listeners for 'q' and spacebar
   useEffect(() => {
     const handleKeyPress = (event: KeyboardEvent) => {
       if (event.key.toLowerCase() === 'q') {
         handleQuit();
+      } else if (event.key === ' ') {
+        event.preventDefault();
+        handleNextQuestion();
       }
     };
 
@@ -41,17 +48,16 @@ const CCATTimer: React.FC<CCATTimerProps> = ({
     return () => window.removeEventListener('keydown', handleKeyPress);
   }, []);
 
-  // Timer logic
+  // Timer logic - now continues past zero
   useEffect(() => {
-    if (isRunning && !isFinished && timeLeft > 0) {
+    if (isRunning && !isFinished) {
       intervalRef.current = setInterval(() => {
         setTimeLeft(prev => {
-          if (prev <= 1) {
-            // Time's up for this question
-            handleNextQuestion();
-            return timePerQuestion;
+          const newTime = prev - 1;
+          if (newTime <= 0 && !isOvertime) {
+            setIsOvertime(true);
           }
-          return prev - 1;
+          return newTime;
         });
       }, 1000);
     } else {
@@ -65,11 +71,10 @@ const CCATTimer: React.FC<CCATTimerProps> = ({
         clearInterval(intervalRef.current);
       }
     };
-  }, [isRunning, isFinished, timeLeft, timePerQuestion]);
+  }, [isRunning, isFinished, isOvertime]);
 
   // Create audio context for beep sound
   useEffect(() => {
-    // Create a simple beep sound using Web Audio API
     const createBeep = () => {
       const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
       const oscillator = audioContext.createOscillator();
@@ -91,6 +96,21 @@ const CCATTimer: React.FC<CCATTimerProps> = ({
     audioRef.current = { play: createBeep } as any;
   }, []);
 
+  const redistributeTime = (questionsRemaining: number) => {
+    const elapsedTime = Math.floor((Date.now() - startTimeRef.current) / 1000);
+    const originalTotalTime = defaultTimePerQuestion * totalQuestions;
+    const remainingTime = Math.max(0, originalTotalTime - elapsedTime);
+    
+    setTotalTimeRemaining(remainingTime);
+    
+    if (questionsRemaining > 0) {
+      const newTimePerQuestion = Math.max(5, Math.floor(remainingTime / questionsRemaining));
+      setTimePerQuestion(newTimePerQuestion);
+      return newTimePerQuestion;
+    }
+    return timePerQuestion;
+  };
+
   const handleNextQuestion = () => {
     if (currentQuestion >= totalQuestions) {
       setIsFinished(true);
@@ -100,6 +120,8 @@ const CCATTimer: React.FC<CCATTimerProps> = ({
 
     // Show green flash and play sound
     setShowFlash(true);
+    setIsOvertime(false);
+    
     if (audioRef.current) {
       try {
         audioRef.current.play();
@@ -110,8 +132,13 @@ const CCATTimer: React.FC<CCATTimerProps> = ({
 
     setTimeout(() => {
       setShowFlash(false);
-      setCurrentQuestion(prev => prev + 1);
-      setTimeLeft(timePerQuestion);
+      const newQuestionNumber = currentQuestion + 1;
+      setCurrentQuestion(newQuestionNumber);
+      
+      // Redistribute time among remaining questions
+      const questionsRemaining = totalQuestions - newQuestionNumber + 1;
+      const newTimePerQuestion = redistributeTime(questionsRemaining);
+      setTimeLeft(newTimePerQuestion);
     }, 500);
   };
 
@@ -122,9 +149,13 @@ const CCATTimer: React.FC<CCATTimerProps> = ({
 
   const handleRestart = () => {
     setCurrentQuestion(1);
-    setTimeLeft(timePerQuestion);
+    setTimePerQuestion(defaultTimePerQuestion);
+    setTimeLeft(defaultTimePerQuestion);
+    setTotalTimeRemaining(defaultTimePerQuestion * totalQuestions);
     setIsFinished(false);
+    setIsOvertime(false);
     setIsRunning(true);
+    startTimeRef.current = Date.now();
   };
 
   const handleSettingsToggle = () => {
@@ -137,7 +168,31 @@ const CCATTimer: React.FC<CCATTimerProps> = ({
   const handleSettingsSave = (newTime: number, newTotal: number) => {
     setTimePerQuestion(newTime);
     setTimeLeft(newTime);
+    setTotalTimeRemaining(newTime * newTotal);
     setShowSettings(false);
+  };
+
+  const formatTime = (seconds: number) => {
+    if (seconds >= 0) {
+      return seconds.toString();
+    } else {
+      return `+${Math.abs(seconds)}`;
+    }
+  };
+
+  const getTimerColor = () => {
+    if (timeLeft < 0) {
+      return isOvertime && Math.floor(Date.now() / 1000) % 2 === 0 ? 'text-red-500' : 'text-red-600';
+    } else if (timeLeft <= 5) {
+      return 'text-red-500';
+    }
+    return 'text-slate-800';
+  };
+
+  const formatTotalTime = (seconds: number) => {
+    const minutes = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${minutes}:${secs.toString().padStart(2, '0')}`;
   };
 
   if (isFinished) {
@@ -192,19 +247,37 @@ const CCATTimer: React.FC<CCATTimerProps> = ({
 
           {/* Timer Display */}
           <div className="relative">
-            <div className={`text-8xl font-mono font-bold transition-colors duration-200 ${
-              timeLeft <= 5 ? 'text-red-500' : 'text-slate-800'
-            }`}>
-              {timeLeft}
+            <div className={`text-8xl font-mono font-bold transition-colors duration-200 ${getTimerColor()}`}>
+              {formatTime(timeLeft)}
             </div>
-            <div className="text-sm text-slate-500 mt-2">seconds remaining</div>
+            <div className="text-sm text-slate-500 mt-2">
+              {timeLeft >= 0 ? 'seconds remaining' : 'seconds over'}
+            </div>
+          </div>
+
+          {/* Time Stats */}
+          <div className="bg-slate-50 p-4 rounded-lg space-y-2">
+            <div className="text-sm text-slate-600">
+              <div className="flex justify-between">
+                <span>Time per question:</span>
+                <span className="font-mono">{timePerQuestion}s</span>
+              </div>
+              <div className="flex justify-between">
+                <span>Total time remaining:</span>
+                <span className="font-mono">{formatTotalTime(totalTimeRemaining)}</span>
+              </div>
+            </div>
           </div>
 
           {/* Progress Bar */}
           <div className="w-full bg-slate-200 rounded-full h-2">
             <div 
-              className="bg-blue-500 h-2 rounded-full transition-all duration-1000 ease-linear"
-              style={{ width: `${(timeLeft / timePerQuestion) * 100}%` }}
+              className={`h-2 rounded-full transition-all duration-1000 ease-linear ${
+                timeLeft < 0 ? 'bg-red-500' : 'bg-blue-500'
+              }`}
+              style={{ 
+                width: timeLeft < 0 ? '100%' : `${Math.max(0, (timeLeft / timePerQuestion) * 100)}%` 
+              }}
             />
           </div>
 
@@ -230,7 +303,7 @@ const CCATTimer: React.FC<CCATTimerProps> = ({
 
           {/* Instructions */}
           <div className="text-sm text-slate-500 pt-4 border-t">
-            Press 'Q' to quit • Timer auto-advances after {timePerQuestion} seconds
+            Press 'Q' to quit • Spacebar for next question • Timer continues past zero
           </div>
         </div>
       </Card>
